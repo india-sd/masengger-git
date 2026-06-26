@@ -24,7 +24,9 @@ import {
   ToggleRight,
   Info,
   Network,
-  GitBranch
+  GitBranch,
+  Smartphone,
+  Download
 } from 'lucide-react';
 import { SecureCallManager } from './webrtc';
 import { encryptMessage, decryptMessage } from './crypto';
@@ -170,6 +172,40 @@ function App() {
   const [showGraphManager, setShowGraphManager] = useState(false);
   const [botSelectedGraph, setBotSelectedGraph] = useState('boy'); // 'boy' or 'girl'
   const [selectedGraphNodeId, setSelectedGraphNodeId] = useState('greet');
+
+  // Install / PWA States
+  const [showInstallModal, setShowInstallModal] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isPwaInstallable, setIsPwaInstallable] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsPwaInstallable(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsPwaInstallable(false);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handler);
+    };
+  }, []);
+
+  const handlePwaInstall = () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then((choiceResult) => {
+        if (choiceResult.outcome === 'accepted') {
+          setIsPwaInstallable(false);
+        }
+        setDeferredPrompt(null);
+      });
+    }
+  };
 
   const activeBotGraph = dialogueGraphs[botSelectedGraph];
   const activeNode = activeBotGraph.nodes.find(n => n.id === selectedGraphNodeId) || activeBotGraph.nodes[0];
@@ -896,9 +932,16 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--accent-emerald)', fontWeight: 600 }}>
                 <Shield size={14} /> E2EE Cryptography Verified
               </div>
-              <p style={{ fontSize: '0.75rem', marginTop: '6px', color: 'var(--text-tertiary)' }}>
+              <p style={{ fontSize: '0.75rem', marginTop: '6px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                 Session: {callManagerRef.current ? callManagerRef.current.peerId.toUpperCase() : 'CONNECTING...'}
               </p>
+              <button 
+                className="btn btn-cyan" 
+                onClick={() => setShowInstallModal(true)}
+                style={{ width: '100%', justifyContent: 'center', gap: '8px', fontSize: '0.8rem', padding: '8px', display: 'flex', alignItems: 'center' }}
+              >
+                <Smartphone size={16} /> Install / Download App
+              </button>
             </div>
           </div>
 
@@ -1592,6 +1635,101 @@ function App() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* 8. INSTALL / DOWNLOAD APP MODAL */}
+      {showInstallModal && (
+        <div className="install-modal-overlay" onClick={() => setShowInstallModal(false)}>
+          <div className="install-modal-card glass" onClick={(e) => e.stopPropagation()}>
+            <div className="install-modal-header">
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-primary)', margin: 0, fontSize: '1.25rem' }}>
+                <Smartphone size={24} style={{ color: 'var(--accent-cyan)' }} />
+                Install The Chat Bot
+              </h2>
+              <button 
+                className="icon-btn" 
+                onClick={() => setShowInstallModal(false)}
+                style={{ border: 'none', background: 'transparent', fontSize: '1.2rem', cursor: 'pointer', color: 'var(--text-secondary)' }}
+              >
+                ✖
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Choose your preferred platform to install **The Chat Bot** messaging client for instant secure messaging and encrypted calling.
+            </p>
+
+            <div className="install-options-grid">
+              {/* Option 1: Android APK Download */}
+              <div className="install-option-card emerald">
+                <div className="install-icon-wrapper">
+                  <Download size={28} />
+                </div>
+                <div className="install-option-title" style={{ color: 'var(--accent-emerald)' }}>Android App (APK)</div>
+                <div className="install-option-desc">
+                  Download the Android package (`.apk`) directly to install and run natively on your Android device.
+                </div>
+                <a 
+                  href="/the-chat-bot.apk" 
+                  download="the-chat-bot.apk"
+                  className="btn btn-emerald"
+                  style={{ width: '100%', justifyContent: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Download size={16} /> Download APK
+                </a>
+                <ul className="install-steps">
+                  <li>1. Download the APK file</li>
+                  <li>2. Allow installations from Unknown Sources</li>
+                  <li>3. Run and install the application</li>
+                </ul>
+              </div>
+
+              {/* Option 2: PWA Web App Installation */}
+              <div className="install-option-card">
+                <div className="install-icon-wrapper">
+                  <Smartphone size={28} />
+                </div>
+                <div className="install-option-title" style={{ color: 'var(--accent-cyan)' }}>Web App (PWA)</div>
+                <div className="install-option-desc">
+                  Add the application directly to your desktop or mobile home screen as a Progressive Web App.
+                </div>
+                {isPwaInstallable ? (
+                  <button 
+                    className="btn btn-cyan"
+                    onClick={handlePwaInstall}
+                    style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Smartphone size={16} /> Install Web App
+                  </button>
+                ) : (
+                  <div 
+                    style={{ 
+                      fontSize: '0.75rem', 
+                      background: 'rgba(255,255,255,0.03)', 
+                      border: '1px solid var(--glass-border)', 
+                      padding: '8px 12px', 
+                      borderRadius: 'var(--border-radius-sm)', 
+                      width: '100%',
+                      color: 'var(--text-secondary)'
+                    }}
+                  >
+                    Already installed or run directly from your browser.
+                  </div>
+                )}
+                <ul className="install-steps">
+                  <li><strong>iOS Safari:</strong> Tap Share icon and select "Add to Home Screen".</li>
+                  <li><strong>Chrome/Edge:</strong> Click install icon in the URL bar.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setShowInstallModal(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
