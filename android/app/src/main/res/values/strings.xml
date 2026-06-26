@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">The Chat Bot</string>
+    <string name="title_activity_main">The Chat Bot</string>
+    <string name="package_name">com.thechatbot.app</string>
+    <string name="custom_url_scheme">com.thechatbot.app</string>
+</resources>

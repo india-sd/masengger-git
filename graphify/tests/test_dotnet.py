@@ -1,0 +1,263 @@
+"""Tests for .NET project file extraction (.sln, .csproj, .xaml, .razor)."""
+from pathlib import Path
+import tempfile
+import pytest
+from graphify.extract import extract_sln, extract_slnx, extract_csproj, extract_xaml, extract_razor
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _labels(r):
+    return [n["label"] for n in r["nodes"]]
+
+
+def _relations(r):
+    return {e["relation"] for e in r["edges"]}
+
+
+# ── .sln ─────────────────────────────────────────────────────────────────────
+
+def test_sln_extracts_projects():
+    r = extract_sln(FIXTURES / "sample.sln")
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert "WebApi" in labels
+    assert "Domain" in labels
+    assert "Tests" in labels
+
+
+def test_sln_contains_edges():
+    r = extract_sln(FIXTURES / "sample.sln")
+    contains = [e for e in r["edges"] if e["relation"] == "contains"]
+    assert len(contains) == 3
+
+
+def test_sln_project_dependency():
+    r = extract_sln(FIXTURES / "sample.sln")
+    assert "imports" in _relations(r)
+
+
+# ── .slnx ────────────────────────────────────────────────────────────────────
+
+def test_slnx_extracts_projects():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert "WebApi" in labels
+    assert "Domain" in labels
+    assert "Tests" in labels
+
+
+def test_slnx_contains_edges():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    contains = [e for e in r["edges"] if e["relation"] == "contains"]
+    assert len(contains) == 3
+
+
+def test_slnx_project_dependency():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    assert "imports" in _relations(r)
+
+
+def test_slnx_invalid_xml():
+    with tempfile.NamedTemporaryFile(suffix=".slnx", mode="w", delete=False) as f:
+        f.write("<Solution><Project></Solution>")
+        f.flush()
+        r = extract_slnx(Path(f.name))
+    assert "error" in r
+
+
+def test_slnx_missing_file():
+    r = extract_slnx(Path("/nonexistent/file.slnx"))
+    assert "error" in r
+
+
+# ── .csproj ──────────────────────────────────────────────────────────────────
+
+def test_csproj_packages():
+    r = extract_csproj(FIXTURES / "sample.csproj")
+    assert "error" not in r
+    labels = _labels(r)
+    assert any("MediatR" in l for l in labels)
+    assert any("FluentValidation" in l for l in labels)
+    assert any("Swashbuckle" in l for l in labels)
+
+
+def test_csproj_project_references():
+    r = extract_csproj(FIXTURES / "sample.csproj")
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert len(imports) == 6  # 4 packages + 2 project refs
+
+
+def test_csproj_target_framework():
+    r = extract_csproj(FIXTURES / "sample.csproj")
+    assert "net8.0" in _labels(r)
+
+
+def test_csproj_sdk():
+    r = extract_csproj(FIXTURES / "sample.csproj")
+    assert "Microsoft.NET.Sdk.Web" in _labels(r)
+
+
+def test_csproj_invalid_xml():
+    with tempfile.NamedTemporaryFile(suffix=".csproj", mode="w", delete=False) as f:
+        f.write("<Project><Invalid></Project>")
+        f.flush()
+        r = extract_csproj(Path(f.name))
+    assert "error" in r
+
+
+# ── .xaml ────────────────────────────────────────────────────────────────────
+
+def test_xaml_class_resolves_to_codebehind_partial_class():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert "error" not in r
+    class_nodes = [
+        n for n in r["nodes"]
+        if n["label"] == "MainWindow" and str(n.get("source_file", "")).endswith("sample.xaml.cs")
+    ]
+    assert class_nodes
+    assert any(
+        e["relation"] == "references"
+        and e.get("context") == "x_class"
+        and e["target"] == class_nodes[0]["id"]
+        for e in r["edges"]
+    )
+
+
+def test_xaml_named_controls_and_bindings():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    labels = set(_labels(r))
+    assert {"RootPanel", "UserNameBox", "SaveButton", "UserName"} <= labels
+    assert any(e["relation"] == "references" and e.get("context") == "binding" for e in r["edges"])
+
+
+def test_xaml_events_resolve_to_codebehind_methods():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    method_nodes = {
+        n["label"].strip("()").lstrip("."): n["id"]
+        for n in r["nodes"]
+        if str(n.get("source_file", "")).endswith("sample.xaml.cs")
+    }
+    assert {"Window_Loaded", "UserNameChanged", "Save_Click"} <= set(method_nodes)
+    event_targets = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "event"
+    }
+    assert method_nodes["Window_Loaded"] in event_targets
+    assert method_nodes["UserNameChanged"] in event_targets
+    assert method_nodes["Save_Click"] in event_targets
+
+
+def _event_targets(r):
+    return {e["target"] for e in r["edges"]
+            if e["relation"] == "references" and e.get("context") == "event"}
+
+
+def test_xaml_event_match_requires_handler_signature():
+    """A property value that matches an ordinary method's name must not become an
+    event edge -- only methods with a (object sender, ...EventArgs e) signature do."""
+    xaml = (
+        '<Window x:Class="Demo.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '  <Button Content="Refresh" Click="Refresh"/>\n'
+        "</Window>\n"
+    )
+    cs = (
+        "using System.Windows;\n"
+        "namespace Demo { public partial class MainWindow : Window {\n"
+        "  public void Refresh() {}\n"  # business method, not a handler signature
+        "}}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "view.xaml"
+        p.write_text(xaml)
+        (Path(d) / "view.xaml.cs").write_text(cs)
+        r = extract_xaml(p)
+    assert "error" not in r
+    assert _event_targets(r) == set()
+
+
+def test_xaml_non_event_attribute_value_does_not_fabricate_event():
+    """Content=/Tag= holding a string that equals a real handler's name must not
+    create an event edge; only the genuine event attribute (Click) should."""
+    xaml = (
+        '<Window x:Class="Demo.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '  <Button x:Name="B1" Content="Save_Click" Tag="OnLoaded" Click="Save_Click"/>\n'
+        "</Window>\n"
+    )
+    cs = (
+        "using System.Windows;\n"
+        "namespace Demo { public partial class MainWindow : Window {\n"
+        "  private void Save_Click(object sender, RoutedEventArgs e) {}\n"
+        "  private void OnLoaded(object sender, RoutedEventArgs e) {}\n"
+        "}}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "view.xaml"
+        p.write_text(xaml)
+        (Path(d) / "view.xaml.cs").write_text(cs)
+        r = extract_xaml(p)
+    handlers = {n["label"].strip("()").lstrip("."): n["id"]
+                for n in r["nodes"] if str(n.get("source_file", "")).endswith("view.xaml.cs")}
+    targets = _event_targets(r)
+    # Click -> Save_Click is the only real event; OnLoaded (referenced only via Tag) is not.
+    assert handlers["Save_Click"] in targets
+    assert handlers.get("OnLoaded") not in targets
+    assert len(targets) == 1
+
+
+# ── .razor ───────────────────────────────────────────────────────────────────
+
+def test_razor_using_and_inject():
+    r = extract_razor(FIXTURES / "sample.razor")
+    assert "error" not in r
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    assert any("microsoft" in t for t in targets)
+    assert any("counterservice" in t.lower() for t in targets)
+
+
+def test_razor_components():
+    r = extract_razor(FIXTURES / "sample.razor")
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    assert any("weatherdisplay" in t for t in targets)
+    assert any("datagrid" in t for t in targets)
+
+
+def test_razor_page_route():
+    r = extract_razor(FIXTURES / "sample.razor")
+    assert any("/counter" in l for l in _labels(r))
+
+
+def test_razor_inherits():
+    r = extract_razor(FIXTURES / "sample.razor")
+    assert "inherits" in _relations(r)
+
+
+def test_razor_code_methods():
+    r = extract_razor(FIXTURES / "sample.razor")
+    labels = _labels(r)
+    assert "IncrementCount" in labels
+    assert "LoadData" in labels
+
+
+def test_razor_missing_file():
+    r = extract_razor(Path("/nonexistent/file.razor"))
+    assert "error" in r
+
+
+# ── dispatch & detect integration ────────────────────────────────────────────
+
+def test_dispatch_table():
+    from graphify.extract import _get_extractor
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml", ".razor", ".cshtml"):
+        assert _get_extractor(Path(f"foo{ext}")) is not None, f"{ext} not in dispatch"
+
+
+def test_code_extensions():
+    from graphify.detect import CODE_EXTENSIONS
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml", ".razor", ".cshtml"):
+        assert ext in CODE_EXTENSIONS, f"{ext} missing"
